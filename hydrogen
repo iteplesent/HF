@@ -1,0 +1,229 @@
+import numpy as np
+from scipy.linalg import eigh, inv, sqrtm
+from itertools import product
+from scipy import special
+
+Z_H=1
+
+class primitive_gaussian():
+
+    def __init__(self, alpha, coeff, coordinates):
+        
+        self.alpha = alpha
+        self.coeff = coeff
+        self.coordinates = np.array(coordinates)
+
+class nucleus():
+     
+     def __init__(self, Z, coordinates):
+        
+        self.Z = Z
+        self.coordinates = np.array(coordinates)
+
+
+
+H1=[]
+H2=[]
+Z=[]
+# Source: Basis Set Exchange (bse.pnl.gov) https://www.basissetexchange.org/basis/sto-6g/format/nwchem/?version=1&elements=2
+exponents = np.array([35.52322122, 6.513143725, 1.822142904,  0.6259552659, 0.2430767471,  0.1001124280])
+coeffs = np.array([0.009163596281, 0.04936149294, 0.1685383049, 0.3705627997, 0.4164915298, 0.1303340841])
+
+coeffs=coeffs*(( 2.0 * exponents / np.pi ) ** 0.75)
+# print(coeffs)
+molecule_coordinates =  [[0.0, 0.0, 0.0], [0.0, 0.0, 1.3983972315]] #bohr(not Armstrong)
+
+
+
+num_primitives=len(exponents)
+for i in range(num_primitives):
+    H1.append(primitive_gaussian(exponents[i],coeffs[i],molecule_coordinates[0]))
+    H2.append(primitive_gaussian(exponents[i],coeffs[i],molecule_coordinates[1]))
+
+molecule = [H1, H2]
+num_basis_funcs = len(molecule)
+
+for i in range(2):
+    Z.append(nucleus(Z_H,molecule_coordinates[i]))
+
+def overlap_matrix(molecule):
+    S=np.zeros((num_basis_funcs, num_basis_funcs))
+    for i in range(num_basis_funcs):
+        for j in range(num_basis_funcs):
+            nprimitives_i = len(molecule[i])
+            nprimitives_j = len(molecule[j])
+            for k in range(nprimitives_i):
+                for l in range(nprimitives_j):
+                    a, b = exponents[k], exponents[l]
+                    d_k, d_l = coeffs[k], coeffs[l]
+                    r=molecule[i][k].coordinates - molecule[j][l].coordinates
+                    r2=np.dot(r,r)
+                    S[i,j]+=d_k*d_l*np.exp(-r2*a*b/(a+b))*(np.pi/(a+b))**1.5
+    return S
+
+S=overlap_matrix(molecule)
+
+def kinetic_matrix(molecule):
+    T=np.zeros((num_basis_funcs, num_basis_funcs))
+    for i in range(num_basis_funcs):
+        for j in range(num_basis_funcs):
+            nprimitives_i = len(molecule[i])
+            nprimitives_j = len(molecule[j])
+            for k in range(nprimitives_i):
+                for l in range(nprimitives_j):
+                    a, b = exponents[k], exponents[l]
+                    d_k, d_l = coeffs[k], coeffs[l]
+                    r=molecule[i][k].coordinates - molecule[j][l].coordinates
+                    r2=np.dot(r,r)
+                    T[i,j]+=d_k*d_l*a*b/(a+b)*(3-2*a*b/(a+b)*r2)*np.exp(-r2*a*b/(a+b))*(np.pi/(a+b))**1.5
+
+    return T
+
+def F0(t): #boys function when n=0
+    if t ==0:  
+        return 1.0
+    else:
+        return 0.5 * np.sqrt(np.pi / t) * special.erf(np.sqrt(t))
+
+def nuclear(molecule,Z):
+    V=np.zeros((num_basis_funcs, num_basis_funcs))
+    for z in Z: 
+        for i in range(num_basis_funcs):
+            for j in range(num_basis_funcs):
+                nprimitives_i = len(molecule[i])
+                nprimitives_j = len(molecule[j])
+                for k in range(nprimitives_i):
+                    for l in range(nprimitives_j):
+                        a, b = exponents[k], exponents[l]
+                        d_k, d_l = coeffs[k], coeffs[l]
+
+                        p   = a+b
+                        P   = molecule[i][k].alpha*molecule[i][k].coordinates +  molecule[j][l].alpha*molecule[j][l].coordinates
+                        R_p  = P/p
+
+                        R_ab=molecule[i][k].coordinates - molecule[j][l].coordinates
+                        R_ab2=np.dot(R_ab,R_ab)
+                        R_pc=R_p - z.coordinates
+                        R_pc2=np.dot(R_pc,R_pc)
+                        V[i,j] += -2*np.pi*d_k*d_l/p*z.Z*np.exp(-a*b/(a+b)*R_ab2)*F0(p*R_pc2)
+
+    return V
+
+
+def electron_electron_repulsion(molecule):
+    eri=np.zeros((num_basis_funcs, num_basis_funcs, num_basis_funcs, num_basis_funcs))
+    for i in range(num_basis_funcs):
+        for j in range(num_basis_funcs):
+            for k in range(num_basis_funcs):
+                for l in range(num_basis_funcs):
+                    nprimitives_i = len(molecule[i])
+                    nprimitives_j = len(molecule[j])
+                    nprimitives_k = len(molecule[k])
+                    nprimitives_l = len(molecule[l])
+                    for ii in range(nprimitives_i):
+                        for jj in range(nprimitives_j):
+                            for kk in range(nprimitives_k):
+                                for ll in range(nprimitives_l):
+                                    a,b,c,d=exponents[ii], exponents[jj],exponents[kk], exponents[ll]
+                                    d_1, d_2, d_3, d_4 = coeffs[ii], coeffs[jj], coeffs[kk], coeffs[ll]
+                                    R_ab=molecule[i][ii].coordinates - molecule[j][jj].coordinates
+                                    R_ab2=np.dot(R_ab,R_ab)
+                                    R_cd=molecule[k][kk].coordinates - molecule[l][ll].coordinates
+                                    R_cd2=np.dot(R_cd,R_cd)
+                                    R_p=(molecule[i][ii].alpha*molecule[i][ii].coordinates +  b*molecule[j][jj].coordinates)/(a+b)
+                                    R_q=(c*molecule[k][kk].coordinates +  d*molecule[l][ll].coordinates)/(c+d)
+                                    R_pq=R_p-R_q
+                                    R_pq2=np.dot(R_pq,R_pq)
+                                    term1=2*np.pi**2.5/((a+b)*(c+d)*np.sqrt(a+b+c+d))
+                                    term2=np.exp(-a*b/(a+b)*R_ab2-c*d/(c+d)*R_cd2)
+                                    term3=F0((a+b)*(c+d)/(a+b+c+d)*R_pq2)
+                                    eri[i,j,k,l]+=d_1*d_2*d_3*d_4*term1*term2*term3                            
+    return eri
+
+def nuclear_repulsion(Z):
+    E_n=0
+    l=len(Z)
+    for i in range(l):
+        for j in range(i+1,l):
+            r=Z[i].coordinates-Z[j].coordinates
+            r2=np.sqrt(np.dot(r,r))
+            E_n+=Z[i].Z*Z[j].Z/r2
+    return E_n
+
+
+
+    return density_matrix
+
+
+
+
+
+S=overlap_matrix(molecule)
+T=kinetic_matrix(molecule)
+V=nuclear(molecule,Z)
+eri=electron_electron_repulsion(molecule)
+
+# print(S)
+# print(T)
+# print(V)
+# print(eri)
+
+# density matrix P (initial guess is 0)
+P=np.zeros((num_basis_funcs, num_basis_funcs))
+threshold = 1e-10
+max=10
+H_core=V+T
+
+# G=np.array([[[[ERI]]]])
+# print(G)
+# # total_energy = 0.5 * np.sum(P * (H_core + F))
+E_old=0
+# print(np.einsum('pqrs,rs->pq', G, [[1]]))
+
+for i in range(max):
+    J = np.einsum('pqrs,rs->pq', eri, P)
+    K = np.einsum('prqs,rs->pq', eri, P)
+    F = H_core + J-K/2
+    # print("Fock",F)
+
+    # print(np.einsum('pqrs,rs->pq', G, P))
+    # the generalized eigenvalue problem FC=SCE.  To solve this,
+    # 1. Diagonalise S, find X such that X_dagger S X = I. X=S^-1/2
+    S_inverse = inv(S)
+    X = sqrtm(S_inverse)
+    print("X",X)
+    # 2. Transformation. Let C_prime=X^-1 C. C=X C_prime. Therefore, X_dagger F X C_prime=C_prime*E.
+    F_prime = np.dot(X,np.dot(F, X))
+    # 3.Define F_prime = X_dagger F X, solve eigenvectors(C)/ eigenenergy(E).
+    eigenvalues, C_prime = eigh(F_prime)
+    print("Fprime", F_prime)
+    # 4. Transform back
+    C=np.dot(X,C_prime)
+    print("C",C)
+
+    
+ 
+    # Build new density matrix (2 electrons in the single orbital)
+    # only 1 occupied orbital
+    C_occ = C[:, :1]
+    P = 2 * np.dot(C_occ, C_occ.T)
+    print("P", C_occ, P)
+    # print("Density matrix")
+    # print(P)
+    # Compute electronic energy
+    E_new = 0.5 * np.sum(P * (H_core + F))
+    
+    delta_E = abs(E_new - E_old)
+    print(f"Iter {i+1}: E = {E_new:.10f}, dE = {delta_E:.2e}")
+    
+    if delta_E < threshold:
+        print("SCF converged.")
+        break
+    E_old = E_new
+
+
+E_n=nuclear_repulsion(Z)
+
+E_new=E_new+E_n
+print(P)
+print(f"\nTotal Ground-State Energy: {E_new:.6f} Hartrees")
